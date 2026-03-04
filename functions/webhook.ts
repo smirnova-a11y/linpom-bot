@@ -8,8 +8,10 @@ type Env = {
 type TgUpdate = any;
 
 const START_BTN = "Привет, ЛинПом";
-
 const RIDDLE_IMAGE_PATH = "/assets/linpom/riddle.png";
+
+// невидимый символ, чтобы можно было показать клавиатуру без “текста”
+const INVISIBLE = "\u2060";
 
 const INTRO_TEXT_HTML =
   "ааааа ты видимо тот самый дружок-пирожок ради которого меня (зачеркнуто: <s>заключили в холодную тюрьму цифрового одиночества</s>) создали и хочешь получить подсказку ну или типа понять че вообще происходит\n\n" +
@@ -22,11 +24,22 @@ const WRONG_1 = "неправильно балда. попробуй еще ра
 
 // плейсхолдер под 2 подсказку + 2 ответ
 const PROMPT_2 = "в процессе вторая подсказка";
-// потом просто заменишь Set на нужные варианты
 const OK_WORDS_2 = new Set<string>([]);
 
 const OK_WORDS_1 = new Set(["фонтан", "Фонтан", "ФОНТАН"]);
 
+// ====== state machine (без reply) ======
+type Stage = "idle" | "await_word_1" | "await_word_2";
+const STAGE = new Map<number, Stage>();
+
+function getStage(chatId: number): Stage {
+  return STAGE.get(chatId) ?? "idle";
+}
+function setStage(chatId: number, s: Stage) {
+  STAGE.set(chatId, s);
+}
+
+// ====== telegram helpers ======
 function tgUrl(token: string, method: string) {
   return `https://api.telegram.org/bot${token}/${method}`;
 }
@@ -38,9 +51,7 @@ async function tgCall(env: Env, method: string, payload: Record<string, any>) {
     body: JSON.stringify(payload),
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok || data?.ok === false) {
-    console.log("TG error", method, r.status, JSON.stringify(data));
-  }
+  if (!r.ok || data?.ok === false) console.log("TG error", method, r.status, JSON.stringify(data));
   return data;
 }
 
@@ -57,28 +68,23 @@ function removeKeyboard() {
   return { remove_keyboard: true };
 }
 
-function forceReply() {
-  return { force_reply: true };
-}
-
 function riddleImageUrl(origin: string) {
   return `${origin}${RIDDLE_IMAGE_PATH}`;
 }
 
-function isReplyTo(msg: any, needle: string) {
-  const rt = msg?.reply_to_message?.text;
-  return typeof rt === "string" && rt === needle;
-}
-
+// ====== сценарий ======
 async function showStart(env: Env, chatId: number) {
+  // “ничего не писать” — отправляем невидимый символ + клавиатуру
   await tgCall(env, "sendMessage", {
     chat_id: chatId,
-    text: START_BTN,
+    text: INVISIBLE,
     reply_markup: startKeyboard(),
   });
 }
 
 async function startQuest(env: Env, origin: string, chatId: number) {
+  setStage(chatId, "await_word_1");
+
   await tgCall(env, "sendMessage", {
     chat_id: chatId,
     text: INTRO_TEXT_HTML,
@@ -94,15 +100,14 @@ async function startQuest(env: Env, origin: string, chatId: number) {
   await tgCall(env, "sendMessage", {
     chat_id: chatId,
     text: PROMPT_1,
-    reply_markup: forceReply(),
   });
 }
 
 async function sendSecondHintPlaceholder(env: Env, chatId: number) {
+  setStage(chatId, "await_word_2");
   await tgCall(env, "sendMessage", {
     chat_id: chatId,
     text: PROMPT_2,
-    reply_markup: forceReply(),
   });
 }
 
@@ -111,8 +116,11 @@ async function handleMessage(env: Env, origin: string, msg: any) {
   const text: string = msg?.text || "";
   if (!chatId) return;
 
-  // чтобы "сразу была кнопка": на /start и на любое первое/левое сообщение показываем кнопку
+  const stage = getStage(chatId);
+
+  // /start: показываем кнопку, без текста
   if (text.startsWith("/start")) {
+    setStage(chatId, "idle");
     await showStart(env, chatId);
     return;
   }
@@ -123,38 +131,29 @@ async function handleMessage(env: Env, origin: string, msg: any) {
     return;
   }
 
-  // 1 ответ (строго 3 варианта), принимаем только если это reply на PROMPT_1
-  if (isReplyTo(msg, PROMPT_1)) {
+  // этап 1: ждём слово (без reply)
+  if (stage === "await_word_1") {
     if (OK_WORDS_1.has(text)) {
       await sendSecondHintPlaceholder(env, chatId);
     } else {
-      await tgCall(env, "sendMessage", {
-        chat_id: chatId,
-        text: WRONG_1,
-        reply_markup: forceReply(),
-      });
+      await tgCall(env, "sendMessage", { chat_id: chatId, text: WRONG_1 });
     }
     return;
   }
 
-  // 2 ответ (пока плейсхолдер)
-  if (isReplyTo(msg, PROMPT_2)) {
+  // этап 2: плейсхолдер (без reply)
+  if (stage === "await_word_2") {
     if (OK_WORDS_2.size && OK_WORDS_2.has(text)) {
-      // место под "правильно" для 2 этапа
       await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_2 });
     } else {
-      // пока просто держим в статусе "в процессе"
-      await tgCall(env, "sendMessage", {
-        chat_id: chatId,
-        text: PROMPT_2,
-        reply_markup: forceReply(),
-      });
+      await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_2 });
     }
     return;
   }
 
-  // если пользователь просто что-то написал — показываем кнопку старта без лишнего текста
-  await showStart(env, chatId);
+  // idle: ничего не начинаем заново и не спамим
+  // (если хочешь, можно тут снова показывать кнопку — но ты как раз не хотела рестартов)
+  return;
 }
 
 export const onRequestPost: PagesFunction<Env> = async (ctx) => {
