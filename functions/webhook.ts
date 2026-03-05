@@ -9,10 +9,9 @@ type TgUpdate = any;
 
 const START_BTN = "Привет, ЛинПом";
 const RIDDLE_IMAGE_PATH = "/assets/linpom/riddle.png";
+const MAP_IMAGE_PATH = "/assets/linpom/map.png";
 
-// невидимый символ, чтобы можно было показать клавиатуру без “текста”
-const INVISIBLE = "\u2060";
-const HELLO_TEXT = "привет я линпом";
+const HELLO_TEXT = "мое сознание оцифровали и заперли в боте в качестве прислужника для выполнения простейших действий помогите";
 
 const INTRO_TEXT_HTML =
   "ааааа ты видимо тот самый дружок-пирожок ради которого меня <s>заключили в холодную тюрьму цифрового одиночества</s> создали и хочешь получить подсказку ну или типа понять че вообще происходит\n\n" +
@@ -23,13 +22,24 @@ const PROMPT_1 =
 
 const WRONG_1 = "неправильно балда. попробуй еще раз";
 
-// плейсхолдер под 2 подсказку + 2 ответ
-const PROMPT_2 = "в процессе вторая подсказка";
-const OK_WORDS_2 = new Set<string>([]);
+// этап 2
+const PROMPT_2 = "вау молодчинка";
+const PROMPT_2_1 =
+  "твоей наградой будет следующее задание для него тебе понадобится эта карта. направляйся в указанное место и попроси приготовить тебе... о боже что";
+const PROMPT_2_2 =
+  "в моем сценарии сказано что ты попросишь луковый раф. я конечно не склонна осуждать чьи либо вкусы но честно говоря у тебя они странные. короче скажи сотруднику эту кодовую фразу и обязательно получишь взамен какой то предмет я хз";
+const OK_WORDS_2 = new Set(["753"]);
+
+// финал
+const PROMPT_3 = "судя по всему этот код не подошел к шкатулке не так ли";
+const PROMPT_3_1 = "да ладно тебе я просто прикалываюсь";
+const PROMPT_3_2 =
+  "правильный код это некая памятная дата в формате dd/m но я же тебе не оракул чтобы знать нужные цифры. дальше сам разберешься";
+const PROMPT_3_3 = "удачи и кстати поздравляю с чем то там";
 
 const OK_WORDS_1 = new Set(["фонтан", "Фонтан", "ФОНТАН"]);
 
-// ====== state machine (без reply) ======
+// ====== state machine ======
 type Stage = "idle" | "await_word_1" | "await_word_2";
 const STAGE = new Map<number, Stage>();
 
@@ -73,9 +83,12 @@ function riddleImageUrl(origin: string) {
   return `${origin}${RIDDLE_IMAGE_PATH}`;
 }
 
+function mapImageUrl(origin: string) {
+  return `${origin}${MAP_IMAGE_PATH}`;
+}
+
 // ====== сценарий ======
 async function showStart(env: Env, chatId: number) {
-  // “ничего не писать” — отправляем невидимый символ + клавиатуру
   await tgCall(env, "sendMessage", {
     chat_id: chatId,
     text: HELLO_TEXT,
@@ -104,12 +117,26 @@ async function startQuest(env: Env, origin: string, chatId: number) {
   });
 }
 
-async function sendSecondHintPlaceholder(env: Env, chatId: number) {
+async function sendSecondHint(env: Env, origin: string, chatId: number) {
   setStage(chatId, "await_word_2");
-  await tgCall(env, "sendMessage", {
+
+  await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_2 });
+
+  await tgCall(env, "sendPhoto", {
     chat_id: chatId,
-    text: PROMPT_2,
+    photo: mapImageUrl(origin),
   });
+
+  await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_2_1 });
+  await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_2_2 });
+}
+
+async function sendFinal(env: Env, chatId: number) {
+  setStage(chatId, "idle");
+  await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_3 });
+  await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_3_1 });
+  await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_3_2 });
+  await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_3_3 });
 }
 
 async function handleMessage(env: Env, origin: string, msg: any) {
@@ -119,41 +146,37 @@ async function handleMessage(env: Env, origin: string, msg: any) {
 
   const stage = getStage(chatId);
 
-  // /start: показываем кнопку, без текста
   if (text.startsWith("/start")) {
     setStage(chatId, "idle");
     await showStart(env, chatId);
     return;
   }
 
-  // нажали кнопку старта
   if (text === START_BTN) {
     await startQuest(env, origin, chatId);
     return;
   }
 
-  // этап 1: ждём слово (без reply)
+  // этап 1
   if (stage === "await_word_1") {
     if (OK_WORDS_1.has(text)) {
-      await sendSecondHintPlaceholder(env, chatId);
+      await sendSecondHint(env, origin, chatId);
     } else {
       await tgCall(env, "sendMessage", { chat_id: chatId, text: WRONG_1 });
     }
     return;
   }
 
-  // этап 2: плейсхолдер (без reply)
+  // этап 2
   if (stage === "await_word_2") {
-    if (OK_WORDS_2.size && OK_WORDS_2.has(text)) {
-      await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_2 });
+    if (OK_WORDS_2.has(text)) {
+      await sendFinal(env, chatId);
     } else {
-      await tgCall(env, "sendMessage", { chat_id: chatId, text: PROMPT_2 });
+      await tgCall(env, "sendMessage", { chat_id: chatId, text: WRONG_1 });
     }
     return;
   }
 
-  // idle: ничего не начинаем заново и не спамим
-  // (если хочешь, можно тут снова показывать кнопку — но ты как раз не хотела рестартов)
   return;
 }
 
